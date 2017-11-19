@@ -6,6 +6,6 @@ return array(
     'vendor' => 'shevernitskiy',
     'handlers' => array(
     ),
-    'description' => 'автоматизийруй это',
+    'description' => 'автоматизийруй',
     'img' => 'img/logo.png',
 );

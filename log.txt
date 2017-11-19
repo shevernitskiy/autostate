@@ -1,0 +1,3 @@
+При вызове cli скрипта плагина Autostate были изменены статусы заказов:
+Заказ 4 - completed
+Письмо дляmahahuha@gmail.com
