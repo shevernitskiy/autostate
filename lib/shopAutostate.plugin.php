@@ -10,9 +10,8 @@ class shopAutostatePlugin extends shopPlugin
      */
     public function saveSettings($settings = array())
     {
-        $this->lg($settings);
-        parent::saveSettings($settings);
-//        $this->checkTrackingStatus('Delivery',$this->getTrackingByNumber('ZA036792743LV'));
+        $settings['cron'] = 'php '.wa()->getConfig()->getPath('root').DIRECTORY_SEPARATOR.'cli.php shop AutostateCheck';
+        parent::saveSettings($settings);  
         return true;
     }
 
@@ -28,20 +27,13 @@ class shopAutostatePlugin extends shopPlugin
             throw new waExeption('Для получения списка заказов нужно указать стадию');
             return false;
         } else {
-            switch ($state) {
-                case 'ship':
-                    $model = new shopOrderModel();
-                    $sql = "SELECT `id` FROM `shop_order` WHERE `state_id`='shipped'";
-                    $orderList = $model->query($sql)->fetchAll();
-                    if ($orderList) {
-                        return array_column($orderList, 'id');
-                    } else {
-                        return false;
-                    }
-                    break;
-                default:
-                    return false;
-                    break;
+            $model = new shopOrderModel();
+            $sql = "SELECT `id` FROM `shop_order` WHERE `state_id`='$state'";
+            $orderList = $model->query($sql)->fetchAll();
+            if ($orderList) {
+                return array_column($orderList, 'id');
+            } else {
+                return false;
             }
             return true;
         }
@@ -86,14 +78,60 @@ class shopAutostatePlugin extends shopPlugin
     {
         $model = new waModel();
         $sql = "SELECT `data`, `t`  FROM `wa_shipping_rupost_tracking` WHERE `id`='$trackingNumber'";
-        $trackingNumber = $model->query($sql)->fetchAll();
-        if ($trackingNumber) {
-            return $trackingNumber[0]['data'];
+        $result = $model->query($sql)->fetchAll();
+        if ($result) {
+            if (((strtotime('now') - strtotime($result[0]['t']))/60 > self::getPluginSettings()['update_inerval']) && self::getPluginSettings()['is_update']) {
+                $status = self::trackingRequest($trackingNumber);
+                $t = date("Y-m-d H:i:s");
+                $data = json_encode($status);
+                $sql = "UPDATE `wa_shipping_rupost_tracking` SET `t`='$t', `data`='$data' WHERE `id`='$trackingNumber'";
+                $model->exec($sql);
+                return $data;
+            } else {
+                return $result[0]['data'];
+            }
         } else {
             return false;
         }       
     }
 
+    /**
+     * Запрос истории у сервиса трекинга
+     * 
+     * @param string $tracking_id 
+     * @return array history 
+     */
+    public function trackingRequest($tracking_id)
+    {
+        $wsdlurl = 'https://tracking.russianpost.ru/rtm34?wsdl';
+        $client = '';
+        try {
+            $client = new SoapClient($wsdlurl, array('trace' => 1, 'soap_version' => SOAP_1_2));
+            $params = array (
+                'OperationHistoryRequest' => array (
+                    'Barcode' => $tracking_id,
+                    'MessageType' => '0',
+                    'Language' => 'ENG'),
+                'AuthorizationHeader' => array (
+                    'login' => self::getPluginSettings()['api_login'],
+                    'password'=> self::getPluginSettings()['api_password']
+                )
+            );
+            $result = $client->getOperationHistory(new SoapParam($params, 'OperationHistoryRequest'));
+        } catch (SoapFault $ex) {
+            return 'При запросе произошла ошибка: '.$ex->getMessage();
+        }
+        $array = array();
+        foreach ($result->OperationHistoryData->historyRecord as $key => $record) {
+            $array[$key] = array(
+                waDateTime::format('datetime', $record->OperationParameters->OperDate),
+                $record->AddressParameters->CountryOper->Code2A,
+                $record->AddressParameters->OperationAddress->Description,
+                $record->OperationParameters->OperType->Name
+            );
+        }
+        return $array;
+    }    
 
     /**
      * Проверка соответствия последнего статуса из трек-истории $trackingHistory указанному $status
@@ -109,6 +147,44 @@ class shopAutostatePlugin extends shopPlugin
             return true;
         } else {
             return false;
+        }
+    }
+
+
+    /**
+     * Проверка срока доставки с момента первой регистрации 
+     * @param mixed $limit 
+     * @param mixed $trackingHistory 
+     * @return mixed 
+     */
+    public function checkTrackingTime($trackingHistory)
+    {
+        $array = json_decode($trackingHistory);
+        if (isset($array[0][0])) {
+            $interval = ((strtotime('now') - strtotime($array[0][0])) / 86400);
+            if ($interval > 0) {
+                return round($interval,2);
+            }
+        }
+        return 0;
+    }    
+
+    public function getPluginSettings()
+    {
+        $model = new waAppSettingsModel();
+        $sql = "SELECT * from `wa_app_settings` WHERE `app_id`='shop.autostate'";
+        $settings = array_column($model->query($sql)->fetchAll(), 'value', 'name');        
+        return $settings;        
+    }
+    
+    public function sendStateEmail($subject, $body)
+    {
+        $settings = self::getPluginSettings();
+        if ($settings['send_email'] && $settings['emailto']) {
+            $mail_message = new waMailMessage($subject, $body, 'text/plain');
+            $mail_message->setFrom($settings['emailfrom'], 'Плагин Autostate');
+            $mail_message->setTo($settings['emailto'], 'manager');
+            $mail_message->send();
         }
     }
 
